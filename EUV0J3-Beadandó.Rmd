@@ -1,0 +1,189 @@
+---
+title: "Döntési Modellek a MarioKartban"
+subtitle: ""
+author: "Mark Fazekas"
+date: "2023-05-26"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+if (!require('knitr')) install.packages('knitr')
+library(knitr)
+
+opts_knit$set(root.dir = "~/OneDrive - Corvinus University of Budapest/2SEM/DONTESI/dontesi-beadando")
+```
+
+# Bevezetés
+
+Az alábbi R kód egy döntési problémát vizsgál: melyik a legjobb sofőr a MarioKart 8-ban számomra?
+
+# Adatok betöltése
+
+```{r, warning = FALSE}
+if (!require('readr')) install.packages('readr')
+library(readr)
+
+if (!require('utils')) install.packages('utils')
+library(utils)
+
+url <- "https://raw.githubusercontent.com/fzksmrk/dontesi-beadando/main/CSV/drivers.csv"
+
+drivers <- read_delim(
+  url,
+  delim = ";",
+  escape_double = FALSE,
+  col_types = cols(
+    Weight = col_integer(),
+    Acceleration = col_integer(),
+    `On-Road traction` = col_integer(),
+    `Off-Road Traction` = col_integer(),
+    `Mini-Turbo` = col_integer(),
+    `Ground Speed` = col_integer(),
+    `Water Speed` = col_integer(),
+    `Anti-Gravity Speed` = col_integer(),
+    `Air Speed` = col_integer(),
+    `Ground Handling` = col_integer(),
+    `Water Handling` = col_integer(),
+    `Anti-Gravity Handling` = col_integer(),
+    `Air Handling` = col_integer()
+  ),
+  trim_ws = TRUE
+)
+
+drivers
+```
+
+# Adatok tisztítása
+
+```{r, warning = FALSE}
+if (!require("janitor")) install.packages("janitor")
+library(janitor)
+
+drivers <- clean_names(drivers)
+drivers
+```
+
+# Adatok vizsgálata
+
+```{r, warning = FALSE}
+if (!require('inspectdf')) install.packages('inspectdf')
+library(inspectdf)
+
+inspect_types(drivers)
+inspect_cat(drivers)
+inspect_na(drivers)
+inspect_num(drivers)
+```
+
+# Új változók létrehozása
+
+```{r, warning = FALSE}
+
+if (!require('dplyr')) install.packages('dplyr')
+library(dplyr)
+```
+
+csoportosítsuk az azonos rekordokat, amik csak "névben" különböznek
+
+```{r}
+drivers <- drivers %>%
+  group_by_if(is.numeric) %>% #group by all numeric columns
+  summarise_at(vars(-one_of(names(drivers)[is.numeric(drivers)])), paste, collapse = ", ") %>% #concatenate the text variable
+  summarise_all(first) #keep the first value of numeric columns
+# drivers <- drivers %>%
+#   mutate(number_of_recs = str_count(driver, ",") + 1)
+drivers
+```
+
+```{r}
+drivers$traction <- 0.70 * drivers$on_road_traction + 0.30 * drivers$off_road_traction
+
+drivers$speed <- 0.50 * drivers$ground_speed + 0.30 * drivers$water_speed + 0.10 * drivers$anti_gravity_speed + 0.10 * drivers$air_speed
+
+drivers$handling <- 0.50 * drivers$ground_handling + 0.30 * drivers$water_handling + 0.10 * drivers$anti_gravity_handling + 0.10 * drivers$air_handling
+
+drivers
+```
+
+```{r}
+drivers$on_road_traction  <- NULL
+drivers$off_road_traction <- NULL
+
+drivers$ground_speed <- NULL
+drivers$water_speed <- NULL
+drivers$anti_gravity_speed <- NULL
+drivers$air_speed <- NULL
+
+drivers$ground_handling <- NULL
+drivers$water_handling <- NULL
+drivers$anti_gravity_handling <- NULL
+drivers$air_handling <- NULL
+
+drivers
+```
+
+# Vizuális elemzés
+
+```{r, warning = FALSE}
+if (!require('tidyverse')) install.packages('tidyverse')
+library(tidyverse)
+
+if (!require('ggplot2')) install.packages('ggplot2')
+library(ggplot2)
+
+plotdata <- drivers %>%
+  select(driver, 
+         weight, 
+         acceleration, 
+         mini_turbo, 
+         traction, 
+         speed, 
+         handling) %>%
+  pivot_longer(cols = c("weight", "acceleration", "mini_turbo", "traction", "speed", "handling"))
+
+
+ggplot(plotdata, aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~ name, scales = "free")
+```
+```{r, warning = FALSE}
+if (!require('corrplot')) install.packages('corrplot')
+library(corrplot)
+
+correlation_data <- drivers %>%
+  select(weight, 
+         acceleration, 
+         mini_turbo, 
+         traction, 
+         speed, 
+         handling)
+
+correlation_matrix <- cor(correlation_data, use = "pairwise.complete.obs")
+
+corrplot(correlation_matrix)
+```
+```{r}
+drivers %>% 
+  select(driver, 
+         weight, 
+         acceleration, 
+         mini_turbo, 
+         traction, 
+         speed, 
+         handling) %>%
+  ggplot(aes(x = acceleration, y = mini_turbo, colour = weight)) +
+    geom_point()
+```
+
+
+# Döntési modellek
+
+## Sorrendi skála
+
+## Arányskála
+
+
