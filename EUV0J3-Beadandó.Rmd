@@ -19,9 +19,14 @@ opts_knit$set(root.dir = "~/OneDrive - Corvinus University of Budapest/2SEM/DONT
 
 # Bevezetés
 
-Az alábbi R kód egy döntési problémát vizsgál: melyik a legjobb sofőr a MarioKart 8-ban számomra?
+Az alábbi R kód egy döntési problémát vizsgál: melyik a legjobb sofőr a MarioKart 8-ban?
+A játékban 43 sofőr közül választunk, amik összességében csak 16 különböző sofőr típus.
+A 16 csoportot fogom összehasonlítani a későbbiekben.
+Az adatok forrása: Kaggle (https://www.kaggle.com/datasets/marlowspringmeier/mario-kart-8-deluxe-ingame-statistics)
 
 # Adatok betöltése
+
+Az egyszerűség kedvéért a letöltött CSV-fájlt fogom használni, de a githubra feltöltött változatot.
 
 ```{r, warning = FALSE}
 if (!require('readr')) install.packages('readr')
@@ -59,6 +64,8 @@ drivers
 
 # Adatok tisztítása
 
+Oszlopnevek javítása.
+
 ```{r, warning = FALSE}
 if (!require("janitor")) install.packages("janitor")
 library(janitor)
@@ -68,6 +75,8 @@ drivers
 ```
 
 # Adatok vizsgálata
+
+Nézzük meg az adatokat
 
 ```{r, warning = FALSE}
 if (!require('inspectdf')) install.packages('inspectdf')
@@ -87,7 +96,7 @@ if (!require('dplyr')) install.packages('dplyr')
 library(dplyr)
 ```
 
-csoportosítsuk az azonos rekordokat, amik csak "névben" különböznek
+csoportosítsuk az azonos rekordokat, amik csak "névben" különböznek.
 
 ```{r}
 drivers <- drivers %>%
@@ -99,6 +108,11 @@ drivers <- drivers %>%
 drivers
 ```
 
+Számítsunk új adatokat, az egyszerűség végett.
+A traction, mint tapadás (magasabb érték jobb). 70%-ban on_road és 30%-ban off_road pályákról beszélünk, ezért a számított tapadás ezek az adatok súlyzott átlaga.
+A sebesség a különböző felületeken (szintén magasabb érték jobb) hasonló módszerrel lett kiszámolva.
+Az irányítás is ugyan így működik.
+
 ```{r}
 drivers$traction <- 0.70 * drivers$on_road_traction + 0.30 * drivers$off_road_traction
 
@@ -108,6 +122,8 @@ drivers$handling <- 0.50 * drivers$ground_handling + 0.30 * drivers$water_handli
 
 drivers
 ```
+
+Az egyszerűség végett a már egyszerűsített oszlopokat távolítsuk el.
 
 ```{r}
 drivers$on_road_traction  <- NULL
@@ -127,6 +143,8 @@ drivers
 ```
 
 # Vizuális elemzés
+
+Nézzük meg az adatokat vizuálisan.
 
 ```{r, warning = FALSE}
 if (!require('tidyverse')) install.packages('tidyverse')
@@ -150,6 +168,8 @@ ggplot(plotdata, aes(x = value)) +
   geom_histogram() +
   facet_wrap(~ name, scales = "free")
 ```
+Nézzük meg, hogyan korrelálnak ezek az adatok.
+
 ```{r, warning = FALSE}
 if (!require('corrplot')) install.packages('corrplot')
 library(corrplot)
@@ -166,6 +186,8 @@ correlation_matrix <- cor(correlation_data, use = "pairwise.complete.obs")
 
 corrplot(correlation_matrix)
 ```
+Vagy ezt is vizuálisabban.
+
 ```{r}
 # Create a new dataframe with only the quantity fields
 df <- drivers[c("weight", "acceleration", "mini_turbo", "traction", "speed", "handling")]
@@ -173,6 +195,8 @@ df <- drivers[c("weight", "acceleration", "mini_turbo", "traction", "speed", "ha
 # Create a scatterplot matrix
 pairs(df)
 ```
+Vagy még vizuálisabban.
+
 ```{r, warning = FALSE}
 if (!require('psych')) install.packages('psych')
 library(psych)
@@ -180,7 +204,6 @@ library(psych)
 # Create a scatterplot matrix with correlations
 pairs.panels(df)
 ```
-
 
 # Döntési modellek
 
@@ -196,12 +219,12 @@ decision_1 <- drivers %>%
          speed, 
          handling) %>% 
   rownames_to_column(var = "row_name") %>%
-  mutate(id = driver) %>%
-  mutate(acceleration_rank = rank(-acceleration,ties.method = "max"),
-         mini_turbo_rank = rank(-mini_turbo,ties.method = "max"),
-         traction_rank = rank(-traction,ties.method = "max"),
-         speed_rank = rank(-speed,ties.method = "max"),
-         handling_rank = rank(-handling,ties.method = "max")) %>%
+  # mutate(id = driver) %>%
+  mutate(acceleration_rank = rank(-acceleration,ties.method = "min"),
+         mini_turbo_rank = rank(-mini_turbo,ties.method = "min"),
+         traction_rank = rank(-traction,ties.method = "min"),
+         speed_rank = rank(-speed,ties.method = "min"),
+         handling_rank = rank(-handling,ties.method = "min")) %>%
   mutate(overall_rank = acceleration_rank + mini_turbo_rank + traction_rank + speed_rank + handling_rank) %>%
   mutate(overall_rank_rank = rank(overall_rank)) 
 
@@ -247,6 +270,8 @@ ggplot(plotdata, aes(x = decision_criteria, y = value, colour = driver, group = 
   theme_bw() +
   theme(legend.position = "none", panel.grid.minor = element_blank())
 ```
+
+Láthatjuk az ábrán is, hogy a végső rangsorban "Baby Rosalina, Lemmy" lett az első. Szinte mindenben az elsők, kivétel a sebesség, hiszen ott az utolsó lett ez a kategória. 
 
 ## Arányskála
 
@@ -309,30 +334,46 @@ geom_point(position = position_dodge(width = 0.05)) +
 
 # Érzékenységvizsgálat a többszempontú döntési modellekre
 
-```{r}
-if (!require('topsis')) install.packages('topsis'); library('topsis')
-if (!require('FuzzyMCDM')) install.packages('FuzzyMCDM'); library('FuzzyMCDM')
-if (!require('FuzzyAHP')) install.packages('FuzzyAHP'); library('FuzzyAHP')
+```{r, warning = FALSE}
+if (!require('FuzzyR')) install.packages('FuzzyR'); library('FuzzyR')
+
+necessary_columns <- c("acceleration", "mini_turbo","traction","speed","handling")
+decision_1[necessary_columns] <- sapply(decision_1[necessary_columns], as.numeric)
+
+# minden ugyan olyan fontos
+weights <- rep(1/5, 5)
+
+# normalizálás
+decision_1_normalized <- as.data.frame(lapply(decision_1[necessary_columns], function(x) x / sqrt(sum(x^2))))
+
+# súlyzott döntési mátrix
+decision_1_weighted <- as.data.frame(lapply(decision_1_normalized, function(x) x * weights))
+
+# legjobb és legrosszabb eset 
+ideal_solution <- apply(decision_1_weighted, 2, max)
+negative_ideal_solution <- apply(decision_1_weighted, 2, min)
+
+# távolság
+separation_from_ideal <- sqrt(rowSums((decision_1_weighted - ideal_solution)^2))
+separation_from_negative_ideal <- sqrt(rowSums((decision_1_weighted - negative_ideal_solution)^2))
+
+# relatív távolság
+relative_closeness <- separation_from_negative_ideal / (separation_from_ideal + separation_from_negative_ideal)
+
+# rangsorolás
+decision_1$rank <- rank(-relative_closeness) # '-' sign is used because we want to rank in decreasing order
+
+decision_1
+
+
 ```
 
 
+```{r}
 
+ggplot(decision_1, aes(x=reorder(driver, rank), y=relative_closeness)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x="Driver", y="Relative Closeness", title="TOPSIS Rankings")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+```
