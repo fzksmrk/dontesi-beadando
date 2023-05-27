@@ -1,0 +1,533 @@
+---
+title: "Érzékenységvizsgálat a többszempontú döntési modellekre"
+author: "Kovács Tibor"
+output: 
+  html_notebook: 
+    fig_caption: yes
+bibliography: ahp-bibliography.bib
+---
+
+Az alábbi R Notebuk azt mutatja meg, hogy miként lehet figyelembe venni a többszempontú döntési modelleknél az alternatívák egyes szempontok szerinti értékében és/vagy a döntési szempontok fontossági súlyában érzékelhető bizonytalanságot. Ezt a bizonytalanságot úgy vesszük figyeélembe, hogy az értékeket nem mint egy pontos számot, hanem mint egy valószínűségi tartományt értelmezzük. Ehhez az ún. "elmosódott halmazok" (fuzzy sets, fuzzy numbers) segítségével írjuk le, ahol az értékeket egy szám helyett egy három számból álló tartománnyal írjuk le. A bizonytalanság nélküli értékeket ún. "éles halmazoknak" (crisp sets, crisp numbers) nevezzük.
+
+[Elmosódott halmazok logikája](https://hu.wikipedia.org/wiki/Elmos%C3%B3dott_halmazok_logik%C3%A1ja)
+
+# Az R környezet inicializálása
+
+```{r setup, include=FALSE, echo=FALSE}
+if (!require('knitr')) install.packages('knitr')
+library(knitr)
+
+opts_knit$set(root.dir = "C:\\Users\\tibor\\OneDrive\\Dokumentumok\\University\\Courses taught\\Dontesi modszerek\\2023")
+```
+
+# A szükséges csomagok betöltése
+
+Betöltjük a már szokásos módon a "tidyverse" (csomag készlet az adatok manipulálására és megjelenítésére), "readxl" (az adatok Excel-ből történő betöltésére), "ggrepel" (a ggplot ábrák átfedásmentes feliratozása) és "janitor" (az adatok elnevezésének tisztítása) csomagokat. Ezen kívül betöltjük a "topsis" csomagot, amovel a TOPSIS módszer (Technique for Order of Preference by Similarity to Ideal Solution) számításait tudjuk elvégezni, a "FuzzyMCDM" csomagot, melynek segítségével többszempontú döntési modellekhez kapcsolódó számításokat tudunk elvégezni, így pl. alkalmazni tudjuk a TOPSIS módszert. A "FuzzyAHP" csomaggal az AHP (Analytic Hierarchy Process) módszert tudjuk kiterjeszteni a bizonytalanságot is figyelembe vevő életlen halmazokra.
+
+```{r, message=FALSE}
+
+if (!require('tidyverse')) install.packages('tidyverse'); library('tidyverse')
+if (!require("readxl")) install.packages("readxl"); library("readxl")
+if (!require("xlsx")) install.packages("xlsx"); library("xlsx")
+if (!require("ggrepel")) install.packages("ggrepel"); library("ggrepel")
+if (!require('janitor')) install.packages('janitor'); library('janitor')
+
+if (!require('topsis')) install.packages('topsis'); library('topsis')
+if (!require('FuzzyMCDM')) install.packages('FuzzyMCDM'); library('FuzzyMCDM')
+if (!require('FuzzyAHP')) install.packages('FuzzyAHP'); library('FuzzyAHP')
+
+```
+
+# Az adatok betöltése
+
+Betöltjük a használt autók adatbázisát...
+
+```{r}
+EuropeandSecondCarDatabase <- read_excel("EuropeandSecondCarDatabase.xlsx", 
+    na = "-")
+```
+
+... a "clean_names" függvénnyel a vátozók neveiből eltávolítjuk a szünetjeleket és minden egyéb olyan karaktert, ami később problémát okozhat ...
+
+```{r}
+EuropeandSecondCarDatabase <- clean_names(EuropeandSecondCarDatabase)
+```
+
+...kiszámoljuk az autók korát és hatótávolságát mutató változókat.
+
+```{r}
+CurrentYear <- as.integer(format(Sys.Date(), "%Y"))
+
+EuropeandSecondCarDatabase$age <- CurrentYear - EuropeandSecondCarDatabase$year 
+
+EuropeandSecondCarDatabase$reach_km <- EuropeandSecondCarDatabase$gas_tank_litres_kg_oder_k_whr / EuropeandSecondCarDatabase$fuel_eff_l_kg_oder_k_whr_100km * 100
+
+```
+
+# Döntési modellek alkalmazása
+
+Létrehozunk egy egyedi "id" változót, melyet az autó márkájából, típusából, életkorából és a hozzá tartozó sor számából rakunk össze. Ezután kiválasztjuk a döntési szempontokat, ami jelen esetben az ár, a teljesítmény, a CO2 kibocsátás, az életkor és a hatótávolság lesz.
+
+```{r}
+EuropeandSecondCarDatabase <- EuropeandSecondCarDatabase |>
+  dplyr::mutate(index = row_number()) |>
+  dplyr::mutate(id = paste0(as.character(make), "_", as.character(trim_description), "_", as.character(age), "_", as.character(index)))
+
+decision_matrix <- EuropeandSecondCarDatabase |>
+  filter(base_price_in_germany_eur <= 30000, co2_g_km <= 120) |>
+  dplyr::select(id, engine_type, base_price_in_germany_eur, power_ps, co2_g_km, age, reach_km) |>
+  mutate(price = base_price_in_germany_eur, .keep = "unused") |>
+  dplyr::select(id, engine_type, price, power_ps, co2_g_km, age, reach_km)
+```
+
+## A döntési szempontok értékeiben megfigyelhető bizonytalanság leírása
+
+A döntési szempontok értékeiben megfigyelhető bizonytalanságot olyan módon modellezzük, hogy minden értékhez létrehozunk egy valószínűségi tartományt, feltételezve, hogy az érték annak alsó és felső értéke közütt helyezkedik el, legnagyobb valószínűséggel a középső értéket felvéve. Így pl. az ár esetén feltételezhetjük, hogy az az alapár 90%-ra is csükkenhet (tudunk az árból akár 10%-ot alkudni), míg a felső érték megegyezik a legvalószínűbb értékkel (az eladó nem fogja/tudja tovább emelni az árat.). Így a döntési szempontokat szám-hármasokkal írjuk le (triangular fuzzy sets). Ezt az adattáblát "d_matrix_fuzzy" néven nevezzük.
+
+```{r}
+d_matrix_fuzzy <- decision_matrix |>
+  tibble::column_to_rownames('id') |>
+  dplyr::select(price, power_ps, co2_g_km, age, reach_km) |>
+  dplyr::mutate(price_low = price * 0.9,
+                price_high = price * 1,
+                power_ps_low = power_ps * 0.9,
+                power_ps_high = power_ps * 1.1,
+                co2_g_km_low = co2_g_km * 0.9,
+                co2_g_km_high = co2_g_km * 1.3,
+                age_low = age * 1,
+                age_high = age * 1,
+                reach_km_low = reach_km * 0.7,
+                reach_km_high = reach_km * 1.1) |>
+  dplyr::select(price_low, 
+                price, 
+                price_high,
+                power_ps_low,
+                power_ps,
+                power_ps_high,
+                co2_g_km_low,
+                co2_g_km, 
+                co2_g_km_high,
+                age_low,
+                age, 
+                age_high,
+                reach_km_low,
+                reach_km,
+                reach_km_high)
+```
+
+illetve létrehozunk egy olyan adattáblát is, ahol az egyes döntési szempontokat szintén három számmal írjuk le, de ezek között nincs értékbeli eltérés. Ezt a táblát "d_matrix_crisp_triplet"-nek nevezzük.
+
+```{r}
+d_matrix_crisp_triplet <- decision_matrix |>
+  tibble::column_to_rownames('id') |>
+  dplyr::select(price, power_ps, co2_g_km, age, reach_km) |>
+  dplyr::mutate(price_low = price,
+                price_high = price,
+                power_ps_low = power_ps,
+                power_ps_high = power_ps,
+                co2_g_km_low = co2_g_km,
+                co2_g_km_high = co2_g_km,
+                age_low = age,
+                age_high = age,
+                reach_km_low = reach_km,
+                reach_km_high = reach_km) |>
+  dplyr::select(price_low, 
+                price, 
+                price_high,
+                power_ps_low,
+                power_ps,
+                power_ps_high,
+                co2_g_km_low,
+                co2_g_km, 
+                co2_g_km_high,
+                age_low,
+                age, 
+                age_high,
+                reach_km_low,
+                reach_km,
+                reach_km_high)
+```
+
+## A döntési szempontok irányának leírása
+
+A többszempontú döntési módszerek R csomagjai különböző formában kérhetik annak definiálását, hogy az értékek milyen irányban befolyásolják döntési preferenciánkat. Az értékek növekedésével nő vagy csökken-e a preferenciánk? Az ár esetében az értékek növekedésével preferenciánk csökken, míg a teljesítmény esetében növekszik. Ezt a preferenciát az "ár, teljesítmény, CO2 kibocsátás, életkor és hatótávolság" esetében a következő alternatív módon írhatjuk le: 'min','max','min','min','max' vagy -1, 1, -1, -1, 1 vagy "-", "+", "-", "-", "+".
+
+```{r}
+direction <- c('min','max','min','min','max')
+direction_sign <- c(-1, 1, -1, -1, 1)
+direction_impact <- c("-", "+", "-", "-", "+")
+```
+
+# A döntési szempontok relatív fontosságának definiálása az AHP módszerrel
+
+Először is definiáljuk az AHP módszer alkalmazásához szükséges függvényt (ami az egységvektor eredményeként kapott komplex számból levágja a 0 értékű imaginárius részt) ill. az páros összehasonlítási mátrix megbízhatóságának értékeléséhez szükséges konstansokat (ami megadja, hogy a különböző méretű mátrixokra milyen konstanssal kell elosztani a kapott értéket).
+
+```{r}
+drop.i <- function(x) {
+  if (all(Im(z <- zapsmall(x))==0)) as.numeric(z) else x
+}
+
+RI <- c(0, 0, 0.52, 0.89, 1.11, 1.25, 1.35, 1.4, 1.45, 1.49, 1.51, 1.54, 1.56, 1.57)
+```
+
+### Excel tábla a páros összehasonlítások elvégzéséhez
+
+...hozzunk létre egy Excel táblát, ami tartalmazza a döntési szempontjaink megnevezését, és mentsül el azt Excel formátumba, hogy azt ott majd ki tudjuk tölteni. A kitöltésnél figyeljünk arra, hogy a tábla diagonálja feletti és alatti részt is ki kell töltenünk, a diagonál alatti részbe a felső rész inverzét írva... Ha elkészültünk, nevezzük át az Excel fájlt "Pairwise_matrix.xlsx" névre
+
+```{r}
+nameVals <- colnames(decision_matrix[, -(1:2)])
+
+Pairwise_matrix <- matrix(0, length(nameVals), length(nameVals), dimnames = list(nameVals, nameVals))
+diag(Pairwise_matrix[]) <- 1
+write.xlsx(Pairwise_matrix, "Pairwise_matrix_new.xlsx")
+```
+
+## A páros összehasonlítások táblájának betöltése
+
+Olvassuk be a páros összehasonlításunk tábláját. Figyeljünk arra, hogy az helyesen legyen kitöltve, mert a következő kód nem képes kezelni az esetleges hibákat
+
+```{r}
+AHP_matrix <-  read_excel("Pairwise_matrix.xlsx", range = "B1:F6", col_names = TRUE)
+
+```
+
+... majd számítsuk ki a döntési szempontok (éles - crisp) súlyait
+
+```{r}
+AHP_eigen <- eigen(AHP_matrix)
+
+  n <- ncol(AHP_matrix)
+
+  lambda <- sapply(AHP_eigen$values[1], drop.i)
+  CI <- (lambda - n)/(n-1)
+  CR <- CI/RI[n]
+
+  AHP_weights <- sapply(AHP_eigen$vectors[, 1], drop.i)
+
+  AHP_weights <- AHP_weights / sum(AHP_weights)
+
+  AHP_weights <- t(data.frame(AHP_weights))
+  colnames(AHP_weights) <- nameVals
+  
+  paste("CR = ", CR, sep = "")
+  as.matrix(AHP_matrix)
+  AHP_weights
+  
+```
+
+# TOPSIS módszer, éles (crisp) értékekre
+
+A következőkben a döntési alternatíváinkat a TOPSIS (Technique for Order of Preference by Similarity to Ideal Solution) módszer szerint fogjuk értékelni. Ez a módszer a döntési szempontok sokdimenziós terében meghatároz egy legjobb (ideal) és egy legrosszabb (anti-ideal) hipotetikus alternatívát, a döntési alternatívál szempontok szerinti legjobb és legrosszabb értékeiből előállítva.
+
+![TOPSIS example for 2 decision criteria](https://www.researchgate.net/profile/Mohammadhossein-Amini/publication/325476897/figure/fig2/AS:632396491796482@1527786481280/NIS-and-PIS-distances-in-TOPSIS.png)
+
+Ezekhez az értékekhez képest számolja ki az egyes alternatívák távolságát (a legjobbhoz és a legrosszabbhoz, külön-külön). A legrosszabb alternatívától az $i$-edik alternatíva $j$-edik szempont szerinti távolsága:
+
+$$  d_{iw} = \sqrt{\sum_{j=1}^n (t_{ij} - t_{wj})^2}, \qquad i = 1, 2, .. m, $$ A legjobb alternatívától az $i$-edik alternatíva $j$-edik szempont szerinti távolsága:
+
+$$  d_{ib} = \sqrt{\sum_{j=1}^n (t_{ij} - t_{bj})^2}, \qquad i = 1, 2, .. m, $$
+
+A döntési alternatívák összesített értéke, a TOPSIS pontszám (Score) e két távolságból számolható.
+
+$$  s_{iw} = d_{iw} / (d_{iw} + d_{iw}),\qquad 0 \le s_{iw} \le 1, \qquad   i = 1, 2, .. m, $$
+
+```{r}
+d_matrix_crisp_single <- d_matrix_fuzzy |>
+  dplyr::select(price, 
+                power_ps,
+                co2_g_km, 
+                age, 
+                reach_km)
+
+```
+
+A "topsis()" függvény argumentumaihoz meg kell adnunk a döntési szempontok értékeit, mátrix formában, a döntési szempontok súlyait vector formában, valamint a döntési szempontok irányát "+" és "-" értékenként. Az eredmények megadják az egyes döntési alternatívák legjobb (ideális) értékhez viszonyított távolságát (score) valamint az alternatívák TOPSIS módszer szerinti ransorát (rank).
+
+```{r}
+results_crisp_single <- topsis(decision = as.matrix(d_matrix_crisp_single), 
+                               weights = as.vector(AHP_weights), 
+                               impacts = direction_impact)
+
+rownames(results_crisp_single) <- rownames(d_matrix_crisp_single)
+results_crisp_single
+```
+
+# TOPSIS módszer elmosódott (fuzzy) értékekre (éles - crisp szempont súlyokkal)
+
+A következőkben megvizsgáljuk, hogy milyen hatással lenne a döntési modellünk végeredményére, ha az egyes értékeket nem éles (crisp) értékként definiálnánk, hanem mint egy valószínűségi változót, elmosódott értékként (fuzzy number) egy legkisebb, legnagyobb és egy legvalószínűbb értékként.
+
+A "FuzzyTOPSISVector" függvény, ami a "FuzzyMCDM" csomag része mind a döntési változók, mind pedig a döntési kritérium súlyok esetében elmosódott (fuzzy) értékeket vár. A döntési kritérium súlyok esetében így egy olyan szám-hármast (legkisebb - legvalószínűbb - legnagyobb) hozunk létre, ahol mindhárom érték ugyanaz.
+
+```{r}
+
+AHP_weights_triplet <- c()
+
+for(i in 1:length(AHP_weights)){
+  
+  triplet <- c(AHP_weights[i], AHP_weights[i], AHP_weights[i])
+  AHP_weights_triplet <- c(AHP_weights_triplet, triplet)
+}
+```
+
+A "FuzzyTOPSISVector()" függvény argumentumában a döntési változókként a már korábban létrehozott szám-hármasokat (d_matrix_fuzzy), az előbb létrehozott döntési súly szám-hármasokat (AHP_weights_triplet), valamint a döntési változók irányát "min" - "max" formában leíró vektort (direction) adjuk meg. A függvény eredményeként megkapjuk a TOPSIS Score legkisebb - legvalószínűbb - legnagyobb értékeinek szám-hármasát (R.1, R.2, R.3), valamint ennek a szám-hármasnak a normalizálásából származtatható éles (crisp) TOPSIS Score értéket (Def_R), ami alapján sorba rendezhetjük az alternatívákat (Ranking).
+
+```{r}
+results_fuzzy_topsis <- FuzzyTOPSISVector(decision = as.matrix(d_matrix_fuzzy),
+                                          weights = AHP_weights_triplet, 
+                                          cb = direction)
+
+rownames(results_fuzzy_topsis) <- rownames(d_matrix_crisp_single)
+results_fuzzy_topsis
+```
+
+A Def_R az elmosódott (fuzzy) számok normalizálásának, élessé alakításának (defuzzification) eredménye García-Cascales and Lamata (2007) García-Cascales, M. S., & Lamata, M. T. (2007). A modification to the index of Liou and Wang for ranking fuzzy number, International Journal of Uncertainty, Fuzziness and Knowledge-Based Systems, 411-- 424. A normalizálást a következő kplet alapján végezzük:
+
+$$ I_{1/3, 1/2}(T_1) = \frac{1}{3} \left(\frac{a_i + 4b_i + c_i}{2}\right)  $$
+
+ahol $a_i$, $b_i$, $c_i$ az elmosódott (fuzzy) értékek legkisebb - legvalószínűbb - legnagyobb szám-hármasai.
+
+# TOPSIS módszer éles (crisp) értékekre, elmosódott (fuzzy) szempont súlyokkal
+
+## Elmosódott (fuzzy) páros összehasonlítási AHP mátrix létrehozása
+
+using a fuzzy scale that would apply ranges
+
+Az elmosódott (fuzzy) páros összehasonlítási mátrix az éles (crisp) páros összehasonlítási mátrix elmosódási skálával (fuzzy scale) való kiterjesztése. További információ @Laarhoven1983 és @Chang1996 mukáiban található.
+
+Az elmosódott (fuzzy) páros összehasonlítási mátrix létrehozásához először az éles (crisp) páros összehasonlítási mátrixunkat "PairwiseComparisonMatrix" osztályú R (S4) objektummá alakítjuk...
+
+```{r}
+
+AHP_matrix_crisp <- matrix(as.vector(t(AHP_matrix)), nrow = nrow(AHP_matrix), ncol = ncol(AHP_matrix), byrow = TRUE)
+colnames(AHP_matrix_crisp) <- nameVals
+rownames(AHP_matrix_crisp) <- nameVals
+
+AHP_matrix_crisp = pairwiseComparisonMatrix(AHP_matrix_crisp)
+show(AHP_matrix_crisp)
+
+```
+
+...majd ezt elmosódottá (fuzzy) alakítjuk úgy, hogy az egyes páros összehasonlítási értékekre egy tartományt (legkisebb - legvalószínűbb - legnagyobb értékek szám-hármasát) definiálunk egy meghatározott "fuzzyScale" értékek szerint. A "full" "fuzzyScale" így pl. az 1 értéket 1/2 - 1 - 2 szám-hármassal, a 2 értéket 1 - 2 - 3 szám-hármassal, ... míg. a 9 értéket 1 8 - 9 - 9 szám-hármassal helyettesíti be. Természetesen alkalmazhatunk más "fuzzyScale" tartományokat is.
+
+```{r}
+
+AHP_matrix_fuzzy = fuzzyPairwiseComparisonMatrix(AHP_matrix_crisp, fuzzyScale = getFuzzyScale(type = "full"), comparsionNotInScale = FALSE, width = 1)
+
+print(AHP_matrix_fuzzy)
+```
+
+A FuzzyAHP csomag lehetőséget ad, hogy megvizsgáljuk a páros összehasonlítási mátrixunk konzisztenciáját. Ennek egyik módja a CR inkonzisztencia hányados, amit @Saaty1980 definiált és maximum $15 \times 15$ elemet tartalmazó mátrixokig alkalmazható [@Saaty2007].
+
+```{r}
+consistencyRatio(AHP_matrix_crisp)
+CR = consistencyRatio(AHP_matrix_crisp, print.report = FALSE)
+print(CR)
+```
+A CR érték nem változik, ha az elmosódott (fuzzy) páros összehasonlítási mátrixra alkalmazzuk.
+
+```{r}
+consistencyRatio(AHP_matrix_fuzzy)
+CR = consistencyRatio(AHP_matrix_crisp, print.report = FALSE)
+print(CR)
+```
+Egy másik páros összehasonlító mátrix konzisztencia ellenőrzési módszer az ún. gyenge konzisztencia ellenőrzés, ami azt vizsgálja, hogy bármely $a_{ij}>1$ és $a_{jk}>1$ esetében 
+$a_{ik}>=\max(a_{ij},a_{jk})$ teljesül-e, minden $i,j,k = 1,2,\dots,n$ esetébenahol $n$ az $a$ mátrix mérete [@Stoklasa2013]. 
+
+A "weakConsistency" függvény megadja, hogy konzisztens-e a páros összehasonlítási mátrix, ill. melyek azok az értékek, ahol a fent bemutatott szabálynak nem tesz eleget a mátrix.
+
+```{r}
+AHP_matrix_crisp@valuesChar
+weakConsistency = weakConsistency(AHP_matrix_crisp)
+```
+Az ellenőrzés eredménye az elmosódott (fuzzy) páros összehasonlító mátrix esetében nem tér el az előző eredménytől.
+```{r}
+AHP_matrix_crisp@valuesChar
+weakConsistency = weakConsistency(AHP_matrix_fuzzy)
+```
+Végül végezhetünk egy ún. szigorú konzisztencia ellenőrzést is, ahol azt vizsgáljuk, hogy $a_{ik} = a_{ij} \times a_{jk}$ teljesül-e minden minden $i,j,k = 1,2,\dots,n$ esetében, ahol $n$ az $a$ mátrix mérete [@Basile1997]. Ennek az elvárásnak, különösen nagyobb mátrixok esetében nehéz eleget tenni, ettől függetlenül érdemes megnéznünk a vizsgálat eredményét. Itt már egy sokkal hosszabb listát kapunk, ahol a konzisztencia feltételei nem teljesülnek. A vizsgálatot csak az éles (crisp) mátrixra futtassuk le, mivel annak eredménye itt sem tér el az elmosódott (fuzzy) mátrix eredményétől.
+
+```{r}
+AHP_matrix_crisp@valuesChar
+strictConsistency = strictConsistency(AHP_matrix_crisp)
+```
+
+Végül számoljuk ki az elmosódott (fuzzy) páros összehasonlítási mátrix alapján a döntési szempont súlyokat. Figyeljük meg, hogy a súlyokra is szám-hármasokat kapunk.
+
+```{r}
+fuzzy_weights = calculateWeights(AHP_matrix_fuzzy)
+print(fuzzy_weights)
+```
+
+## Az elmosódott (fuzzy) döntési szempont súlyok átalakítása a FuzzyMCDM csomag által megkívánt formátumúvá
+
+A FuzzyMCDM csomag a szempontsúlyok szám-hármasát egy vektorként kéri. Ezt a vektort a következő módon tudjuk előállítani:
+
+```{r}
+AHP_weights_triplet <- c()
+
+for (i in 1:nrow(AHP_matrix)) {
+  
+  triplet <- c(fuzzy_weights@fnMin[i], fuzzy_weights@fnModal[i], fuzzy_weights@fnMax[i])
+  AHP_weights_triplet <- c(AHP_weights_triplet, triplet) 
+}
+
+AHP_weights_triplet
+```
+
+# A TOPSIS módszer eredményének kiszámítása
+
+A számítások eredményeként itt is megkapjuk a TOPSIS Score legkisebb - legvalószínűbb - legnagyobb értékeinek szám-hármasát (R.1, R.2, R.3), valamint ennek a szám-hármasnak a normalizálásából származtatható éles (crisp) TOPSIS Score értéket (Def_R), ami alapján sorba rendezhetjük az alternatívákat (Ranking).
+
+```{r}
+results_fuzzy_topsis_2 <- FuzzyTOPSISVector(decision = as.matrix(d_matrix_crisp_triplet), 
+                                            weights = AHP_weights_triplet, 
+                                            cb = direction)
+
+rownames(results_fuzzy_topsis_2) <- rownames(d_matrix_crisp_single)
+results_fuzzy_topsis_2
+```
+
+
+# TOPSIS módszer elmosódott (fuzzy) értékekre, elmosódott (fuzzy) szempont súlyokkal
+
+Végül számítsuk ki az a variációt, ahol mind a döntési alternatívák értékei, mind pedig a döntési szempont súlyok elmosódottak (fuzzy). Itt is az előző módon, szám-hármasonkként kapjuk meg az eredményeket.
+
+```{r}
+results_fuzzy_topsis_3 <- FuzzyTOPSISVector(decision = as.matrix(d_matrix_fuzzy), 
+                                            weights = AHP_weights_triplet, 
+                                            cb = direction)
+
+rownames(results_fuzzy_topsis_3) <- rownames(d_matrix_crisp_single)
+results_fuzzy_topsis_3
+```
+
+
+
+# Az eredmények összegzése és vizuális megjelenítése
+
+Hozzunk létre négy adat objektumot, ami tartalmazza a TOPSIS módszer eredményeit szám-hármasokként. Az éles-éles (crisp-crisp) módszer esetében is létrehozzuk a szám-hármasokat, ill. a normalítált értéket, természetesen ezek ugyanazt az értéket tartalmazzák. A "method" változóként megadjuk a módszer elnevezését. Figyeljük meg, hogy a "\\n" karakter alkalmazása sortörést fog eredményezni.
+
+```{r}
+crisp_decision_crisp_weights <- results_crisp_single |>
+  dplyr::select(score, rank) |>
+  tibble::rownames_to_column() |>
+  dplyr::mutate(tfnMin = score,
+                tfnModal = score,
+                tfnMax = score,
+                tfnDef = score,
+                method = "crisp decision \n crisp weights") |>
+  dplyr::select(-score) |>
+  dplyr::rename(decision_alternative = rowname,
+                ranking = rank)
+```
+
+```{r}
+fuzzy_decision_crisp_weights <- results_fuzzy_topsis |>
+  tibble::rownames_to_column() |>
+  dplyr::mutate(tfnMin = R.1,
+                tfnModal = R.2,
+                tfnMax = R.3,
+                tfnDef = Def_R,
+                method = "fuzzy decision \n crisp weights") |>
+  dplyr::rename(decision_alternative = rowname,
+                ranking = Ranking) |>
+  dplyr::select(decision_alternative, ranking, tfnMin, tfnModal, tfnMax, tfnDef, method)
+```
+
+```{r}
+crisp_decision_fuzzy_weights <- results_fuzzy_topsis_2 |>
+  tibble::rownames_to_column() |>
+  dplyr::mutate(tfnMin = R.1,
+                tfnModal = R.2,
+                tfnMax = R.3,
+                tfnDef = Def_R,
+                method = "crisp decision \n fuzzy weights") |>
+  dplyr::rename(decision_alternative = rowname,
+                ranking = Ranking) |>
+  dplyr::select(decision_alternative, ranking, tfnMin, tfnModal, tfnMax, tfnDef, method)
+```
+
+```{r}
+fuzzy_decision_fuzzy_weights <- results_fuzzy_topsis_3 |>
+  tibble::rownames_to_column() |>
+  dplyr::mutate(tfnMin = R.1,
+                tfnModal = R.2,
+                tfnMax = R.3,
+                tfnDef = Def_R,
+                method = "fuzzy decision \n fuzzy weights") |>
+  dplyr::rename(decision_alternative = rowname,
+                ranking = Ranking) |>
+  dplyr::select(decision_alternative, ranking, tfnMin, tfnModal, tfnMax, tfnDef, method)
+```
+
+
+
+combine data frames
+
+```{r}
+combined_results <- rbind(crisp_decision_crisp_weights,
+                          crisp_decision_fuzzy_weights,
+                          fuzzy_decision_crisp_weights,
+                          fuzzy_decision_fuzzy_weights)
+
+```
+
+```{r}
+plotdata <- combined_results |>
+  dplyr::filter(ranking < 5 | ranking > 60) |>
+  dplyr::inner_join(decision_matrix, by = c("decision_alternative" = "id"))
+
+```
+
+```{r}
+ggplot(plotdata, aes(x = method, y = tfnDef, colour = engine_type, group = decision_alternative, label = decision_alternative)) +
+  geom_point(position = position_dodge(width = 0.05)) +
+  geom_line(position = position_dodge(width = 0.05)) +
+  theme_bw() +
+  theme(legend.position = "none", panel.grid.minor = element_blank()) +
+  geom_text_repel(data = plotdata[plotdata$method == "crisp decision \n crisp weights", ], 
+    direction = "y",
+    xlim = c(0, 1),
+    min.segment.length = 0,
+    max.overlaps = Inf,
+    hjust = 1,
+    nudge_x = -0.17,
+    size = 2) +
+   geom_text_repel(data = plotdata[plotdata$method == "fuzzy decision \n fuzzy weights", ], 
+    direction = "y",
+    xlim = c(4.3, 6),
+    min.segment.length = 0,
+    max.overlaps = Inf,
+    hjust = 0,
+    nudge_x = 0.17, 
+    size = 2) +
+  scale_x_discrete(expand = c(0.4, 0.1, 0.4, 0.1)) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(legend.position = "none", panel.grid.minor = element_blank())
+```
+Az eredényekből láthatjuk, hogy néhány esetben a bizonytalanság figyelembe vétele sorrendváltást eredményezhet. Ezt a sorrenmdváltást azonban érdemes az eredmények szám-hármasként való ábrázolásaként is vizsgálni, ami megmutatja, hogz mekkora átfedés van azokban.
+
+```{r}
+plotdata2 <- plotdata |>
+  dplyr::select(decision_alternative, method, tfnMin, tfnModal, tfnMax) |>
+  dplyr::filter(method != "crisp decision \n crisp weights") |>
+  pivot_longer(cols = dplyr::starts_with("tfn"), values_to = "x_value") |>
+  dplyr::mutate(y_value = case_when(name == "tfnModal" ~ 1,
+                                    TRUE ~ 0))
+```
+
+```{r, fig.height=5, fig.width=10}
+ggplot(plotdata2, aes(x = x_value, y = y_value, colour = decision_alternative, group = decision_alternative, label = decision_alternative)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~ method) +
+  theme_bw() +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(x = NULL, y = NULL) +
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
+  
+```
+Ez az elemzés megmutatta, hogy miként tudjuk a döntési változók értékeire és a szempontok fontossági súlyára vonatkozó bizonytalanságot figyelembe venni. A matematikai képleteket a LaTeX szerint hoztuk létre https://math.meta.stackexchange.com/questions/5020/mathjax-basic-tutorial-and-quick-reference
+
+# References

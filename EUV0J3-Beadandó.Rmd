@@ -167,16 +167,18 @@ correlation_matrix <- cor(correlation_data, use = "pairwise.complete.obs")
 corrplot(correlation_matrix)
 ```
 ```{r}
-drivers %>% 
-  select(driver, 
-         weight, 
-         acceleration, 
-         mini_turbo, 
-         traction, 
-         speed, 
-         handling) %>%
-  ggplot(aes(x = acceleration, y = mini_turbo, colour = weight)) +
-    geom_point()
+# Create a new dataframe with only the quantity fields
+df <- drivers[c("weight", "acceleration", "mini_turbo", "traction", "speed", "handling")]
+
+# Create a scatterplot matrix
+pairs(df)
+```
+```{r, warning = FALSE}
+if (!require('psych')) install.packages('psych')
+library(psych)
+
+# Create a scatterplot matrix with correlations
+pairs.panels(df)
 ```
 
 
@@ -184,6 +186,153 @@ drivers %>%
 
 ## Sorrendi skála
 
+```{r}
+decision_1 <- drivers %>%
+  ungroup() %>%
+  select(driver,
+         acceleration, 
+         mini_turbo, 
+         traction, 
+         speed, 
+         handling) %>% 
+  rownames_to_column(var = "row_name") %>%
+  mutate(id = driver) %>%
+  mutate(acceleration_rank = rank(-acceleration,ties.method = "max"),
+         mini_turbo_rank = rank(-mini_turbo,ties.method = "max"),
+         traction_rank = rank(-traction,ties.method = "max"),
+         speed_rank = rank(-speed,ties.method = "max"),
+         handling_rank = rank(-handling,ties.method = "max")) %>%
+  mutate(overall_rank = acceleration_rank + mini_turbo_rank + traction_rank + speed_rank + handling_rank) %>%
+  mutate(overall_rank_rank = rank(overall_rank)) 
+
+decision_1
+```
+
+```{r}
+plotdata <- decision_1 %>%
+  select(driver, acceleration_rank, mini_turbo_rank, traction_rank, speed_rank, handling_rank, overall_rank_rank) %>%
+  # filter(overall_rank_rank <= 10) %>%
+  pivot_longer(cols = c(acceleration_rank, mini_turbo_rank, traction_rank, speed_rank, handling_rank, overall_rank_rank)) %>%
+  mutate(decision_criteria = as.factor(name), .keep = "unused") %>%
+  mutate(decision_criteria = fct_relevel(decision_criteria, c("acceleration_rank", "mini_turbo_rank", "traction_rank", "speed_rank", "handling_rank", "overall_rank_rank")))
+```
+
+```{r}
+if (!require('ggrepel')) install.packages('ggrepel')
+library(ggrepel)
+
+ggplot(plotdata, aes(x = decision_criteria, y = value, colour = driver, group = driver, label = driver)) +
+  geom_point(position = position_dodge(width = 0.05)) +
+  geom_line(position = position_dodge(width = 0.05)) +
+  theme_bw() +
+  theme(legend.position = "none", panel.grid.minor = element_blank()) +
+  geom_text_repel(data = plotdata[plotdata$decision_criteria == "acceleration_rank", ], 
+    direction = "y",
+    xlim = c(0, 1),
+    min.segment.length = 0,
+    max.overlaps = Inf,
+    hjust = 1,
+    nudge_x = -0.17,
+    size = 2) +
+  geom_text_repel(data = plotdata[plotdata$decision_criteria == "overall_rank_rank", ], 
+    direction = "y",
+    xlim = c(7.5, 10),
+    min.segment.length = 0,
+    max.overlaps = Inf,
+    hjust = 0,
+    nudge_x = 0.17, 
+    size = 2) +
+  scale_x_discrete(expand = c(0.4, 0.1, 0.4, 0.1)) +
+  labs(x = NULL, y = "rank") +
+  theme_bw() +
+  theme(legend.position = "none", panel.grid.minor = element_blank())
+```
+
 ## Arányskála
+
+```{r}
+norm2 <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+```
+
+
+```{r}
+decision_1 <- decision_1 %>%
+  mutate(across(.cols = c(acceleration, 
+         mini_turbo, 
+         traction, 
+         speed, 
+         handling), .fns = norm2, .names = "{.col}_norm2")) %>%
+  mutate(overall_norm2 = rowMeans(select(., c(acceleration_norm2, mini_turbo_norm2, traction_norm2, speed_norm2, handling_norm2))))
+
+decision_1
+```
+
+```{r}
+plotdata <- decision_1 %>%
+    # filter(overall_rank_rank < 10) %>%
+  select(driver, acceleration_norm2, mini_turbo_norm2,traction_norm2,speed_norm2,handling_norm2,overall_norm2) %>%
+  pivot_longer(cols = c(acceleration_norm2, mini_turbo_norm2,traction_norm2,speed_norm2,handling_norm2,overall_norm2)) %>%
+  mutate(decision_criteria = as.factor(name), .keep = "unused") %>%
+  mutate(decision_criteria = fct_relevel(decision_criteria, c("acceleration_norm2", "mini_turbo_norm2", "traction_norm2", "speed_norm2", "handling_norm2", "overall_norm2")))
+
+```
+
+```{r}
+ggplot(plotdata, aes(x = decision_criteria, y = value, colour = driver, group = driver, label = driver)) +
+geom_point(position = position_dodge(width = 0.05)) +
+  geom_line(position = position_dodge(width = 0.05)) +
+  theme_bw() +
+  theme(legend.position = "none", panel.grid.minor = element_blank()) +
+  geom_text_repel(data = plotdata[plotdata$decision_criteria == "acceleration_norm2", ], 
+    direction = "y",
+    xlim = c(0, 1),
+    min.segment.length = 0,
+    max.overlaps = Inf,
+    hjust = 1,
+    nudge_x = -0.17,
+    size = 2) +
+  geom_text_repel(data = plotdata[plotdata$decision_criteria == "overall_norm2", ], 
+    direction = "y",
+    xlim = c(7.5, 10),
+    min.segment.length = 0,
+    max.overlaps = Inf,
+    hjust = 0,
+    nudge_x = 0.17, 
+    size = 2) +
+  scale_x_discrete(expand = c(0.4, 0.1, 0.4, 0.1)) +
+  labs(x = NULL, y = "rank") +
+  theme_bw() +
+  theme(legend.position = "none", panel.grid.minor = element_blank())
+```
+
+# Érzékenységvizsgálat a többszempontú döntési modellekre
+
+```{r}
+if (!require('topsis')) install.packages('topsis'); library('topsis')
+if (!require('FuzzyMCDM')) install.packages('FuzzyMCDM'); library('FuzzyMCDM')
+if (!require('FuzzyAHP')) install.packages('FuzzyAHP'); library('FuzzyAHP')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
